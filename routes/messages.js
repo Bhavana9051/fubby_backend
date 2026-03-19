@@ -1,0 +1,63 @@
+const express = require("express");
+const router = express.Router();
+const Joi = require("joi");
+const { Expo } = require("expo-server-sdk");
+
+const usersStore = require("../store/users");
+const catalogsStore = require("../store/catalogs");
+const messagesStore = require("../store/messages");
+const sendPushNotification = require("../utilities/pushNotifications");
+const auth = require("../middleware/auth");
+const validateWith = require("../middleware/validation");
+
+const schema = {
+  listingId: Joi.number().required(),
+  message: Joi.string().required(),
+};
+
+router.get("/", auth, (req, res) => {
+  const messages = messagesStore.getMessagesForUser(req.user.userId);
+
+  const mapUser = (userId) => {
+    const user = usersStore.getUserById(userId);
+    if (!user) return { id: userId, name: "Unknown User" };
+    return { id: user.id, name: user.name };
+  };
+
+  const resources = messages.map((message) => ({
+    id: message.id,
+    listingId: message.listingId,
+    dateTime: message.dateTime,
+    content: message.content,
+    fromUser: mapUser(message.fromUserId),
+    toUser: mapUser(message.toUserId),
+  }));
+
+  res.send(resources);
+});
+
+router.post("/", [auth, validateWith(schema)], async (req, res) => {
+  const { listingId, message } = req.body;
+
+  const catalog = catalogsStore.getCatalog(listingId);
+  if (!catalog) return res.status(400).send({ error: "Invalid listingId." });
+
+  const targetUser = usersStore.getUserById(parseInt(catalog.userId));
+  if (!targetUser) return res.status(400).send({ error: "Invalid userId." });
+
+  messagesStore.add({
+    fromUserId: req.user.userId,
+    toUserId: catalog.userId,
+    listingId,
+    content: message,
+  });
+
+  const { expoPushToken } = targetUser;
+
+  if (Expo.isExpoPushToken(expoPushToken))
+    await sendPushNotification(expoPushToken, message);
+
+  res.status(201).send();
+});
+
+module.exports = router;
